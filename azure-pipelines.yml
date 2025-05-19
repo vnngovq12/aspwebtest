@@ -1,0 +1,93 @@
+# ASP.NET
+# Build and test ASP.NET projects.
+# Add steps that publish symbols, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/apps/aspnet/build-aspnet-4
+
+parameters:
+- name: image
+  displayName: Agent image
+  type: string
+  default: windows-latest
+  values:
+  - windows-2019
+  - windows-2022
+  - windows-latest
+- name: serviceConnection
+  displayName: App Service connection
+  type: string
+  default: my-azure-subscription
+- name: webAppName
+  displayName: App Service Web App name
+  type: string
+  default: '<Skip Deployment>'
+- name: publish
+  displayName: Publish artifact
+  type: boolean
+  default: false
+
+name: $(Date:yyyyMMdd)$(Rev:.r)-$(Build.DefinitionVersion)-$(SourceBranchName)-${{ lower(parameters.image) }}-$(Build.BuildId)
+
+trigger:
+- master
+
+schedules:
+- cron: '0 12 * * Fri'
+  displayName: 'Weekly build (UTC)'
+  always: 'true' # Run if there are no changes
+  branches:
+    include:
+    - master
+
+variables:
+  package: $(Build.ArtifactStagingDirectory)/SimpleFrameworkApp.zip
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+
+jobs:
+- job: buildAndDeploy
+  ${{ if eq(parameters.webAppName,'<Skip Deployment>') }}:
+    displayName: Build website
+  ${{ else }}:
+    displayName: Build & deploy website
+
+  pool:
+    vmImage: '${{ parameters.image }}'
+
+  steps:
+  - task: NuGetToolInstaller@1
+    displayName: Install NuGet
+
+  - task: NuGetCommand@2
+    displayName: NuGet restore
+    inputs:
+      restoreSolution: '$(solution)'
+
+  - task: VSBuild@1
+    displayName: Build website
+    inputs:
+      solution: '$(solution)'
+      msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PackageLocation="$(build.artifactStagingDirectory)"'
+      platform: '$(buildPlatform)'
+      configuration: '$(buildConfiguration)'
+
+  - task: VSTest@2
+    displayName: Test website locally
+    inputs:
+      platform: '$(buildPlatform)'
+      configuration: '$(buildConfiguration)'
+
+  - ${{ if ne(parameters.webAppName,'<Skip Deployment>') }}:
+    - task: AzureRmWebAppDeployment@4
+      displayName: Deploy website
+      inputs:
+        azureSubscription: ${{ parameters.serviceConnection }}
+        appType: 'webApp'
+        DeploymentType: "webDeploy"
+        Package: $(package)
+        WebAppName: '${{ parameters.webAppName }}'
+
+  - ${{ if parameters.publish }}:
+    - publish: $(package)
+      displayName: Publish artifact
+      artifact: website-$(System.PlanId)
